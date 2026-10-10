@@ -71,6 +71,6 @@ Parking and checking out are single Firestore transactions over the spot, plate 
 Required GitHub settings (*Settings → Secrets and variables → Actions*):
 
 - Secret `FIREBASE_SERVICE_ACCOUNT_ARION_PARKING` (created by `firebase init hosting:github`).
-- **Variables** (not secrets, since the web config is public): `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`.
+- **Secrets** (the web config is public once deployed, but the workflows read it from secrets): `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`.
 
 Firestore rules are deployed with `bun run deploy:rules`, not by CI, because the hosting service account doesn't have permission to change rules.
