@@ -1,0 +1,114 @@
+rules_version = '2';
+
+// Data model
+//   settings/lot            lot configuration (admin only writes)
+//   activeSpots/{spot}      one doc per occupied spot, id = spot number
+//   activePlates/{plate}    one doc per parked plate, id = normalized plate
+//   sessions/{id}           every stay; status "parked" -> "left"
+//   admins/{email}          allowlist, managed from the Firebase console
+//
+// Parking and leaving are public (kiosk). Each operation must write the spot,
+// the plate and the session together, which the rules check with getAfter /
+// existsAfter, so the three collections stay consistent.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()));
+    }
+
+    function capacity() {
+      return exists(/databases/$(database)/documents/settings/lot)
+        ? get(/databases/$(database)/documents/settings/lot).data.capacity
+        : 20;
+    }
+
+    function validPlate(plate) {
+      return plate is string && plate.matches('^[A-Z]{3}[0-9]{3}$');
+    }
+
+    function validSpotId(spot) {
+      return spot.matches('^[1-9][0-9]{0,2}$') && int(spot) <= capacity();
+    }
+
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if id == 'lot'
+        && isAdmin()
+        && request.resource.data.keys().hasOnly(['capacity', 'hourlyRate', 'currency', 'graceMinutes', 'updatedBy', 'updatedAt'])
+        && request.resource.data.capacity is int
+        && request.resource.data.capacity >= 1
+        && request.resource.data.capacity <= 500
+        && request.resource.data.hourlyRate is number
+        && request.resource.data.hourlyRate >= 0
+        && request.resource.data.currency is string
+        && request.resource.data.currency.matches('^[A-Z]{3}$')
+        && request.resource.data.graceMinutes is int
+        && request.resource.data.graceMinutes >= 0
+        && request.resource.data.graceMinutes <= 600;
+    }
+
+    match /activeSpots/{spot} {
+      allow read: if true;
+
+      allow create: if validSpotId(spot)
+        && request.resource.data.keys().hasOnly(['plate', 'sessionId', 'entryAt'])
+        && validPlate(request.resource.data.plate)
+        && request.resource.data.sessionId is string
+        && request.resource.data.entryAt == request.time
+        && getAfter(/databases/$(database)/documents/activePlates/$(request.resource.data.plate)).data.sessionId == request.resource.data.sessionId
+        && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)).data.spot == int(spot);
+
+      allow delete: if !existsAfter(/databases/$(database)/documents/activePlates/$(resource.data.plate))
+        && getAfter(/databases/$(database)/documents/sessions/$(resource.data.sessionId)).data.status == 'left';
+    }
+
+    match /activePlates/{plate} {
+      allow read: if true;
+
+      allow create: if validPlate(plate)
+        && request.resource.data.keys().hasOnly(['spot', 'sessionId'])
+        && request.resource.data.spot is int
+        && getAfter(/databases/$(database)/documents/activeSpots/$(string(request.resource.data.spot))).data.plate == plate
+        && getAfter(/databases/$(database)/documents/activeSpots/$(string(request.resource.data.spot))).data.sessionId == request.resource.data.sessionId;
+
+      allow delete: if !existsAfter(/databases/$(database)/documents/activeSpots/$(string(resource.data.spot)));
+    }
+
+    match /sessions/{id} {
+      // Parked sessions are public; the history of past stays is admin only.
+      allow get: if resource == null || resource.data.status == 'parked' || isAdmin();
+      allow list: if isAdmin();
+
+      allow create: if request.resource.data.keys().hasOnly(['plate', 'spot', 'entryAt', 'exitAt', 'durationMinutes', 'fee', 'currency', 'status'])
+        && request.resource.data.status == 'parked'
+        && request.resource.data.entryAt == request.time
+        && request.resource.data.exitAt == null
+        && request.resource.data.durationMinutes == null
+        && request.resource.data.fee == null
+        && validPlate(request.resource.data.plate)
+        && request.resource.data.spot is int
+        && getAfter(/databases/$(database)/documents/activeSpots/$(string(request.resource.data.spot))).data.sessionId == id;
+
+      allow update: if resource.data.status == 'parked'
+        && request.resource.data.status == 'left'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'exitAt', 'durationMinutes', 'fee', 'currency'])
+        && request.resource.data.exitAt == request.time
+        && request.resource.data.durationMinutes is int
+        && request.resource.data.durationMinutes >= 0
+        && request.resource.data.fee is number
+        && request.resource.data.fee >= 0
+        && request.resource.data.currency is string
+        && !existsAfter(/databases/$(database)/documents/activeSpots/$(string(resource.data.spot)));
+    }
+
+    match /admins/{email} {
+      allow read: if request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == email;
+      allow write: if false;
+    }
+  }
+}
